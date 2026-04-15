@@ -1,1 +1,1 @@
-bash <(curl -fsSL https://raw.githubusercontent.com/latonyahigr/sh/main/vps/vps_net_check.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/latonyahigr/SH/main/vps/vps_net_check.sh)
