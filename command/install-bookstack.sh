@@ -53,10 +53,12 @@ cd "$INSTALL_DIR"
 umask 077
 DB_ROOT_PASSWORD="$(openssl rand -hex 24)"
 DB_PASSWORD="$(openssl rand -hex 24)"
+APP_KEY="base64:$(openssl rand -base64 32 | tr -d '\n')"
 
 {
     printf 'DB_ROOT_PASSWORD=%s\n' "$DB_ROOT_PASSWORD"
     printf 'DB_PASSWORD=%s\n' "$DB_PASSWORD"
+    printf 'APP_KEY=%s\n' "$APP_KEY"
 } > .env
 chmod 600 .env
 
@@ -90,6 +92,7 @@ services:
       PGID: "1000"
       TZ: "Asia/Shanghai"
       APP_URL: "https://${DOMAIN}"
+      APP_KEY: "\${APP_KEY}"
       DB_HOST: "bookstack-db"
       DB_PORT: "3306"
       DB_DATABASE: "bookstack"
