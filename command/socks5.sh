@@ -34,7 +34,34 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y dante-server curl ca-certificates
+apt-get install -y curl ca-certificates
+
+# Debian 13 may not yet expose dante-server in its normal package index.
+# In that case, install the current package directly from Debian's official pool.
+if ! dpkg-query -W -f='${Status}' dante-server 2>/dev/null | grep -q 'ok installed'; then
+  if ! apt-get install -y dante-server; then
+    if [[ "${ID}" == "debian" && "${VERSION_ID%%.*}" == "13" ]]; then
+      ARCH="$(dpkg --print-architecture)"
+      case "$ARCH" in
+        amd64|arm64|armhf|i386|ppc64el|riscv64|s390x) ;;
+        *)
+          echo "Error: Debian 13 architecture is not supported by the fallback package: $ARCH"
+          exit 1
+          ;;
+      esac
+
+      DANTE_DEB="/tmp/dante-server.deb"
+      DANTE_URL="https://deb.debian.org/debian/pool/main/d/dante/dante-server_1.4.4+dfsg2-1+b1_${ARCH}.deb"
+      echo "Installing dante-server from Debian's official package pool..."
+      curl -fL --retry 3 --connect-timeout 10 -o "$DANTE_DEB" "$DANTE_URL"
+      apt-get install -y "$DANTE_DEB"
+      rm -f "$DANTE_DEB"
+    else
+      echo "Error: dante-server is unavailable from the configured package sources."
+      exit 1
+    fi
+  fi
+fi
 
 OUT_IF="$(ip -4 route show default | awk 'NR==1 {print $5}')"
 if [[ -z "$OUT_IF" ]]; then
@@ -62,7 +89,9 @@ external: ${OUT_IF}
 socksmethod: username
 clientmethod: none
 
-user.privileged: proxy
+# Password authentication reads /etc/shadow and therefore requires root here.
+# Dante drops normal proxy traffic to user.notprivileged below.
+user.privileged: root
 user.notprivileged: nobody
 
 client pass {
@@ -91,9 +120,14 @@ if ! systemctl is-active --quiet danted; then
   exit 1
 fi
 
-PUBLIC_IP="$(curl -4fsS --max-time 8 https://api.ipify.org || true)"
-if [[ -z "$PUBLIC_IP" ]]; then
-  PUBLIC_IP="$(hostname -I | awk '{print $1}')"
+# This checks the real username/password path, not only whether the port listens.
+if ! PUBLIC_IP="$(curl -4fsS --max-time 20 \
+  --socks5-hostname "127.0.0.1:${SOCKS_PORT}" \
+  --proxy-user "${SOCKS_USER}:${SOCKS_PASSWORD}" \
+  https://api.ipify.org)"; then
+  echo "Error: danted is running, but the SOCKS5 authentication test failed."
+  journalctl -u danted --no-pager -n 30
+  exit 1
 fi
 
 cat <<EOF
