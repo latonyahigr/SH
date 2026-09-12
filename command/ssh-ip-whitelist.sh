@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # Supports: Debian 10/11/12/13, Ubuntu 22.04/24.04
 # ============================================================
 
-SSH_PORT="${SSH_PORT:-57777}"
+SSH_PORT="${SSH_PORT:-22}"
 CHAIN_NAME="SSH_WHITELIST"
 
 ALLOWED_IPV4=(
