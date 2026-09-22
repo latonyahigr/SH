@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install one Ed25519 public key for an existing Linux user.
 # Usage: bash install-general-key.sh [username] [path/to/general.pub]
-# Without a file argument, paste the public key from Bitwarden/private GitHub.
+# Without a file argument, use the embedded general public key.
 set -euo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 [[ $EUID == 0 ]] || { echo "请使用 sudo bash 或 root 执行。" >&2; exit 1; }
@@ -24,9 +24,9 @@ if [[ $# == 2 ]]; then
   [[ -f $2 && -r $2 ]] || die '公钥文件不存在或不可读'
   cp -- "$2" "$tmp/input"
 else
-  printf '请粘贴 general.pub 的完整一行（ssh-ed25519 开头），然后回车：\n' > /dev/tty
-  IFS= read -r key < /dev/tty || die '读取公钥失败'
-  printf '%s\n' "$key" > "$tmp/input"
+  # Public key only: safe to distribute; never embed a private key here.
+  printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOY/BZiIF8fG9MDUF/gvE6+P2wYjAqQIVnyBTEoqG2Pz' > "$tmp/input"
+  printf '使用脚本内置的 general 公钥。\n'
 fi
 # Accept exactly one plain Ed25519 public key; reject private keys and options.
 awk 'NF {sub(/\r$/, ""); n++; if (NF < 2 || $1 != "ssh-ed25519") bad=1;
