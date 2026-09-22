@@ -3,6 +3,8 @@
 # Usage: bash install-general-key.sh [username] [path/to/general.pub]
 # Without a file argument, paste the public key from Bitwarden/private GitHub.
 set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+[[ $EUID == 0 ]] || { echo "请使用 sudo bash 或 root 执行。" >&2; exit 1; }
 umask 077
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
 [[ $# -le 2 ]] || die '用法：bash install-general-key.sh [用户名] [公钥文件]'
@@ -51,8 +53,7 @@ if [[ -f $auth ]] && awk -v b="$blob" '
   /^[[:space:]]*#/ {next} {for(i=1;i<NF;i++) if($i=="ssh-ed25519" && $(i+1)==b) found=1}
   END {exit !found}' "$auth"; then
   printf '此公钥已经存在，保留现有条目及限制，不重复添加。\n'
-  exit 0
-fi
+else
 if [[ -f $auth ]]; then
   backup=$(mktemp "$ssh_dir/authorized_keys.backup.XXXXXXXX")
   cp -p -- "$auth" "$backup"
@@ -66,6 +67,106 @@ chmod 600 "$auth"
 if command -v restorecon >/dev/null; then
   restorecon "$ssh_dir" "$auth" || printf '提示：请检查 SELinux 文件标签。\n' >&2
 fi
-printf '\n公钥已安装。未修改 sshd 配置、密码登录、防火墙或重启服务。\n'
-printf '请保留当前连接，另开终端使用 general 私钥登录 %s 验证。\n' "$target"
-printf '如果 sshd 使用自定义 AuthorizedKeysFile 或禁止该用户登录，还需单独检查配置。\n'
+fi
+flock -u 9
+printf '\n公钥已就绪。接下来将全局限制 SSH 仅允许公钥认证。\n'
+for tool in python3 systemctl systemd-run; do
+  command -v "$tool" >/dev/null || die "缺少 $tool；未修改 SSH 服务配置。"
+done
+sshd=/usr/sbin/sshd
+config=/etc/ssh/sshd_config
+[[ -x $sshd && -f $config && ! -L $config ]] || die '不支持此 SSH 安装路径或符号链接配置'
+exec 8< /etc/ssh
+flock -n -x 8 || die '另一实例正在修改 SSH 配置'
+unit=
+for candidate in ssh.service sshd.service; do
+  if systemctl is-active --quiet "$candidate"; then unit=$candidate; break; fi
+done
+[[ -n $unit ]] || die '未找到运行中的 systemd SSH 服务；未修改配置'
+[[ $(systemctl show "$unit" -p CanReload --value) == yes ]] || die 'SSH 服务不支持 reload；停止以避免重启'
+# Refuse custom daemon arguments: -f/-o could override the file we validate.
+pid=$(systemctl show "$unit" -p MainPID --value)
+python3 - "$pid" <<'PY_CHECK_PROCESS' || die '检测到自定义 SSH 启动参数，请人工检查'
+import pathlib, sys
+args = pathlib.Path('/proc/' + sys.argv[1] + '/cmdline').read_bytes().split(b'\0')
+text = b' '.join(args).decode(errors='replace')
+if '-f' in text or '-o' in text:
+    raise SystemExit(1)
+PY_CHECK_PROCESS
+# Conservatively refuse Match blocks (including included files); do not weaken
+# or silently bypass site-specific authentication policies.
+python3 - "$config" <<'PY_CHECK_CONFIG' || die '存在 Match、自定义认证策略或不可解析配置；未修改配置'
+import glob, pathlib, shlex, sys
+seen = set()
+def scan(name):
+    path = pathlib.Path(name).resolve()
+    if path in seen: return
+    seen.add(path)
+    for line in path.read_text().splitlines():
+        words = shlex.split(line, comments=True)
+        if not words: continue
+        key = words[0].lower()
+        if key == 'match':
+            raise ValueError('发现 Match 块: ' + str(path))
+        if key == 'authenticationmethods' and words[1:] not in (['any'], ['publickey']):
+            raise ValueError('保留现有多因素认证策略: ' + str(path))
+        if key == 'include':
+            for pattern in words[1:]:
+                if not pattern.startswith('/'): pattern = '/etc/ssh/' + pattern
+                for child in sorted(glob.glob(pattern)): scan(child)
+scan(sys.argv[1])
+PY_CHECK_CONFIG
+"$sshd" -t || die '原有 SSH 配置校验失败，未修改'
+printf '请保留此连接，在另一个终端使用 general 私钥成功登录用户 %s。\n' "$target"
+printf '确认已用密钥登录成功，且控制台可救援后，输入 KEY-LOGIN-OK：' > /dev/tty
+IFS= read -r answer < /dev/tty || die '未确认'
+[[ $answer == KEY-LOGIN-OK ]] || die '已取消关闭密码登录，公钥仍保留'
+backup_dir=$(mktemp -d /etc/ssh/key-only-backup.XXXXXXXX)
+cp -p "$config" "$backup_dir/sshd_config"
+# Prepend global values: OpenSSH uses the first obtained global value.
+{
+  printf '# Managed key-only SSH policy\nPubkeyAuthentication yes\nAuthenticationMethods publickey\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nChallengeResponseAuthentication no\n'
+  cat "$config"
+} > "$tmp/sshd_config"
+"$sshd" -t -f "$tmp/sshd_config" || die '新配置校验失败，原配置未修改'
+"$sshd" -T -f "$tmp/sshd_config" > "$tmp/effective"
+for expected in 'pubkeyauthentication yes' 'authenticationmethods publickey' 'passwordauthentication no' 'kbdinteractiveauthentication no'; do
+  grep -qx "$expected" "$tmp/effective" || die "有效配置不符合预期：$expected"
+done
+# A scheduled rollback survives terminal disconnects. Rebooting before KEEP
+# is not supported, so preserve the printed manual recovery command.
+rollback=$backup_dir/rollback.sh
+printf '#!/bin/bash\nset -eu\ncp -p %q %q\n/usr/sbin/sshd -t\nsystemctl reload %q\n' \
+  "$backup_dir/sshd_config" "$config" "$unit" > "$rollback"
+chmod 700 "$rollback"
+printf '手动恢复命令（当前连接或 VNC 中以 root 执行）：\nbash %s\n' "$rollback"
+timer="ssh-key-rollback-${backup_dir##*.}"
+systemd-run --unit="$timer" --on-active=180s --timer-property=AccuracySec=1s /bin/bash "$rollback" \
+  || die '无法安排自动恢复，未修改配置'
+rollback_on_error() {
+  trap - ERR HUP INT TERM
+  /bin/bash "$rollback" || true
+  systemctl stop "$timer.timer" || true
+  echo '操作失败/中断，已尝试恢复原 SSH 配置。' >&2
+  exit 1
+}
+trap rollback_on_error ERR HUP INT TERM
+cat "$tmp/sshd_config" > "$config"
+"$sshd" -t
+systemctl reload "$unit"
+printf '\n已重载：仅允许公钥认证，密码及交互式认证已关闭。\n'
+printf '请现在再次新建 SSH 连接测试。180 秒后自动恢复原配置。不要重启服务器。\n'
+printf '新连接成功后，120 秒内在这里输入 KEEP 保留配置：' > /dev/tty
+answer=
+if IFS= read -r -t 120 answer < /dev/tty && [[ $answer == KEEP ]]; then
+  systemctl stop "$timer.timer"
+  if systemctl is-active --quiet "$timer.service" || systemctl is-failed --quiet "$timer.service"; then
+    rollback_on_error
+  fi
+  # Refuse success if the timer already restored the old config.
+  cmp -s "$config" "$tmp/sshd_config" || rollback_on_error
+  trap - ERR HUP INT TERM
+  printf '已保留仅密钥登录配置。备份及恢复脚本：%s\n' "$backup_dir"
+else
+  rollback_on_error
+fi
