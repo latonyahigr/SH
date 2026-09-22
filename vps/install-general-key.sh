@@ -2,6 +2,7 @@
 # Install one Ed25519 public key for an existing Linux user.
 # Usage: bash install-general-key.sh [username] [path/to/general.pub]
 # Without a file argument, use the embedded general public key.
+# Noninteractive: successful application permanently disables SSH password login.
 set -euo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 [[ $EUID == 0 ]] || { echo "请使用 sudo bash 或 root 执行。" >&2; exit 1; }
@@ -33,9 +34,6 @@ awk 'NF {sub(/\r$/, ""); n++; if (NF < 2 || $1 != "ssh-ed25519") bad=1;
   print $1 " " $2 " vps-general"} END {if (n != 1 || bad) exit 1}' \
   "$tmp/input" > "$tmp/key" || die '必须提供一把 Ed25519 公钥，不能提供私钥或多把公钥'
 ssh-keygen -lf "$tmp/key" -E sha256 || die '公钥格式无效'
-printf '请与 Bitwarden 中 general 的指纹核对。确认安装请输入 yes：' > /dev/tty
-IFS= read -r answer < /dev/tty || die '未确认'
-[[ $answer == yes ]] || die '已取消，未修改 SSH 配置'
 ssh_dir=$home/.ssh
 auth=$ssh_dir/authorized_keys
 [[ ! -L $ssh_dir && ! -L $auth ]] || die '拒绝修改符号链接 .ssh/authorized_keys'
@@ -70,7 +68,7 @@ fi
 fi
 flock -u 9
 printf '\n公钥已就绪。接下来将全局限制 SSH 仅允许公钥认证。\n'
-for tool in python3 systemctl systemd-run; do
+for tool in python3 systemctl; do
   command -v "$tool" >/dev/null || die "缺少 $tool；未修改 SSH 服务配置。"
 done
 sshd=/usr/sbin/sshd
@@ -117,10 +115,6 @@ def scan(name):
 scan(sys.argv[1])
 PY_CHECK_CONFIG
 "$sshd" -t || die '原有 SSH 配置校验失败，未修改'
-printf '请保留此连接，在另一个终端使用 general 私钥成功登录用户 %s。\n' "$target"
-printf '确认已用密钥登录成功，且控制台可救援后，输入 KEY-LOGIN-OK：' > /dev/tty
-IFS= read -r answer < /dev/tty || die '未确认'
-[[ $answer == KEY-LOGIN-OK ]] || die '已取消关闭密码登录，公钥仍保留'
 backup_dir=$(mktemp -d /etc/ssh/key-only-backup.XXXXXXXX)
 cp -p "$config" "$backup_dir/sshd_config"
 # Prepend global values: OpenSSH uses the first obtained global value.
@@ -133,40 +127,31 @@ cp -p "$config" "$backup_dir/sshd_config"
 for expected in 'pubkeyauthentication yes' 'authenticationmethods publickey' 'passwordauthentication no' 'kbdinteractiveauthentication no'; do
   grep -qx "$expected" "$tmp/effective" || die "有效配置不符合预期：$expected"
 done
-# A scheduled rollback survives terminal disconnects. Rebooting before KEEP
-# is not supported, so preserve the printed manual recovery command.
+# Keep an explicit recovery script for console/manual rollback.
 rollback=$backup_dir/rollback.sh
 printf '#!/bin/bash\nset -eu\ncp -p %q %q\n/usr/sbin/sshd -t\nsystemctl reload %q\n' \
   "$backup_dir/sshd_config" "$config" "$unit" > "$rollback"
 chmod 700 "$rollback"
 printf '手动恢复命令（当前连接或 VNC 中以 root 执行）：\nbash %s\n' "$rollback"
-timer="ssh-key-rollback-${backup_dir##*.}"
-systemd-run --unit="$timer" --on-active=180s --timer-property=AccuracySec=1s /bin/bash "$rollback" \
-  || die '无法安排自动恢复，未修改配置'
 rollback_on_error() {
   trap - ERR HUP INT TERM
-  /bin/bash "$rollback" || true
-  systemctl stop "$timer.timer" || true
-  echo '操作失败/中断，已尝试恢复原 SSH 配置。' >&2
+  if /bin/bash "$rollback"; then
+    echo '操作失败/中断，已恢复执行前的 SSH 配置。' >&2
+  else
+    printf '自动恢复失败，请通过当前连接或控制台执行：bash %s\n' "$rollback" >&2
+  fi
   exit 1
 }
 trap rollback_on_error ERR HUP INT TERM
 cat "$tmp/sshd_config" > "$config"
 "$sshd" -t
 systemctl reload "$unit"
-printf '\n已重载：仅允许公钥认证，密码及交互式认证已关闭。\n'
-printf '请现在再次新建 SSH 连接测试。180 秒后自动恢复原配置。不要重启服务器。\n'
-printf '新连接成功后，120 秒内在这里输入 KEEP 保留配置：' > /dev/tty
-answer=
-if IFS= read -r -t 120 answer < /dev/tty && [[ $answer == KEEP ]]; then
-  systemctl stop "$timer.timer"
-  if systemctl is-active --quiet "$timer.service" || systemctl is-failed --quiet "$timer.service"; then
-    rollback_on_error
-  fi
-  # Refuse success if the timer already restored the old config.
-  cmp -s "$config" "$tmp/sshd_config" || rollback_on_error
-  trap - ERR HUP INT TERM
-  printf '已保留仅密钥登录配置。备份及恢复脚本：%s\n' "$backup_dir"
-else
-  rollback_on_error
-fi
+systemctl is-active --quiet "$unit"
+"$sshd" -T > "$tmp/applied"
+for expected in 'pubkeyauthentication yes' 'authenticationmethods publickey' 'passwordauthentication no' 'kbdinteractiveauthentication no'; do
+  grep -qx "$expected" "$tmp/applied"
+done
+trap - ERR HUP INT TERM
+printf '\n已完成：仅允许公钥认证，SSH 密码及交互式认证已关闭，永久生效。\n'
+printf '备份及手动恢复脚本：%s\n' "$backup_dir"
+printf '本脚本不验证客户端私钥能否登录；请保留当前连接并另开终端测试。\n'
