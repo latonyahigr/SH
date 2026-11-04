@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Debian 12: replace the Beszel hub on port 7070 with Komari.
+# Debian 12 / 13: replace the Beszel hub on port 7070 with Komari.
 # Usage: bash komari-install.sh panel | bash komari-install.sh agent
 set -Eeuo pipefail
 umask 077
@@ -11,7 +11,7 @@ die() { echo "错误：$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die '请使用 root 执行。'
 [[ $MODE == panel || $MODE == agent ]] || die '参数只能是 panel 或 agent。'
 . /etc/os-release
-[[ ${ID:-} == debian && ${VERSION_ID:-} == 12 ]] || die '此脚本仅用于 Debian 12。'
+[[ ${ID:-} == debian && ( ${VERSION_ID:-} == 12 || ${VERSION_ID:-} == 13 ) ]] || die '此脚本仅用于 Debian 12 / Debian 13。'
 command -v flock >/dev/null || die '缺少 flock，请先安装 util-linux。'
 exec 9>/run/lock/komari-install.lock
 flock -n 9 || die '另一个部署任务正在运行。'
