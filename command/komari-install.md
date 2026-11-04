@@ -12,12 +12,12 @@
 curl -fL --retry 3 -H 'Cache-Control: no-cache' "https://raw.githubusercontent.com/latonyahigr/SH/main/command/komari-install.sh?t=$(date +%s)" -o /root/komari-install.sh && bash /root/komari-install.sh panel
 ```
 
-- 只替换映射到主机 7070 的 Beszel hub 容器；遇到其他容器或多个候选时退出。
+- 支持映射到主机 7070 的 Beszel hub 容器，以及直接监听 7070 的独立 systemd Beszel 服务。宿主机进程必须核对可执行文件、所属服务和 MainPID；无法确认或存在自动激活源时退出。
 - 先拉取 `ghcr.io/komari-monitor/komari:1.6.1`，再停止 Beszel。
 - Komari 使用非 root 容器用户，只发布 `127.0.0.1:7070`。
-- HTTP 检查通过后移除原 Beszel 容器；不删除原卷、数据目录和 Beszel Agent。
+- HTTP 检查通过后移除原 Beszel 容器；宿主机服务则停止并禁用开机启动，保留程序和数据。不删除原卷、数据目录和 Beszel Agent。
 - 启动检查失败会尝试恢复原 Beszel；原配置记录保存在 `/opt/komari/beszel-backup`，不是独立的数据备份。
-- 新数据 `/opt/komari/data`；不覆盖已有 `/opt/komari` 或同名容器。
+- 新数据 `/opt/komari/data`；不覆盖已有 Komari 数据或同名容器。如果此前只因端口检查失败而留下检查记录，会把旧目录完整改名为 `/opt/komari-failed-时间-PID` 后重新部署。存在其他文件时退出。
 - 不修改宝塔、其他容器、防火墙和 SSH。不要重新执行旧 Beszel Compose，否则可能再次占用端口。
 
 ## 2. 宝塔设置
@@ -101,4 +101,4 @@ tar -C /opt/komari -czf "/root/komari-backups/data-$(date +%Y%m%d-%H%M%S).tar.gz
 )
 ```
 
-参考：官方 Komari Dockerfile、1.6.1 发布记录、Agent 1.5.11 源码及发布资产。脚本已做 Bash 语法检查及模拟 Docker 替换/失败恢复测试；模拟测试不替代目标机实际验收。
+参考：官方 Komari Dockerfile、1.6.1 发布记录、Agent 1.5.11 源码及发布资产。脚本已做 Bash 语法检查及模拟 Docker、宿主机 systemd 替换、失败恢复和旧失败记录重试测试；模拟测试不替代目标机实际验收。
