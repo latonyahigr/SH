@@ -1,10 +1,12 @@
-# Komari：Debian 12 + Docker + 宝塔反代
+# Komari：Debian 12 / 13 + Docker + 宝塔反代
+
+项目系统兼容要求：后续涉及系统的脚本与部署方案必须同时兼容 Debian 12 和 Debian 13。
 
 域名：`jiankong.845788.xyz`。面板本机端口：7070。
 
 ## 1. 面板服务器执行
 
-需要已有 Docker。脚本只用于 Debian 12，新装 Komari。
+需要已有 Docker。脚本只用于 Debian 12 / 13，新装 Komari。
 
 ```bash
 curl -fL --retry 3 -H 'Cache-Control: no-cache' "https://raw.githubusercontent.com/latonyahigr/SH/main/command/komari-install.sh?t=$(date +%s)" -o /root/komari-install.sh && bash /root/komari-install.sh panel
@@ -57,7 +59,7 @@ location / {
 
 ## 3. 节点安装
 
-面板中为每台服务器新增节点，复制各自的节点 Token。不要执行面板默认生成的 Agent 安装命令。每台 Debian 12 节点执行：
+面板中为每台服务器新增节点，复制各自的节点 Token。不要执行面板默认生成的 Agent 安装命令。每台 Debian 12 / 13 节点执行：
 
 ```bash
 curl -fL --retry 3 -H 'Cache-Control: no-cache' "https://raw.githubusercontent.com/latonyahigr/SH/main/command/komari-install.sh?t=$(date +%s)" -o /root/komari-install.sh && bash /root/komari-install.sh agent
