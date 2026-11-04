@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Debian 12 / 13: replace the Beszel hub on port 7070 with Komari.
+# Debian 12 / 13: migrate a Docker or systemd Beszel hub to Komari.
 # Usage: bash komari-install.sh panel | bash komari-install.sh agent
 set -Eeuo pipefail
 umask 077
@@ -26,11 +26,34 @@ panel() {
   # EXIT traps run after function scopes unwind on an unhandled failure.
   # Keep rollback state at script scope so restoration also works with set -e.
   old_id='' old_running='' old_restart='' backup='' image_id=''
+  old_unit='' old_enabled='' host_changed=0
   changed=0 new_created=0 committed=0
   if docker container inspect komari >/dev/null 2>&1; then
     die '已存在 komari 容器；为避免覆盖已有安装，请先执行 docker ps -a 检查。'
   fi
-  [[ ! -e $BASE ]] || die "$BASE 已存在；为避免覆盖数据，请先检查该目录。"
+  if [[ -e $BASE ]]; then
+    # The old installer can leave only inspection records after a port-check
+    # failure. Archive exactly that state; never replace existing Komari data.
+    python3 - "$BASE" <<'PY'
+from pathlib import Path
+import json, sys
+p = Path(sys.argv[1])
+if p.is_symlink() or not p.is_dir() or {x.name for x in p.iterdir()} != {'beszel-backup'}:
+    sys.exit('目录已有数据，拒绝覆盖：' + str(p))
+b = p / 'beszel-backup'
+if b.is_symlink() or not b.is_dir():
+    sys.exit('备份目录不符合预期，拒绝覆盖。')
+items = list(b.iterdir())
+if not items or any(x.is_symlink() or not x.is_file() or x.name not in {'containers-before.json', 'beszel-inspect.json'} for x in items):
+    sys.exit('目录不符合此前端口检查失败的状态，拒绝覆盖。')
+for x in items:
+    json.loads(x.read_text())
+PY
+    archive="${BASE}-failed-$(date +%Y%m%d-%H%M%S)-$$"
+    [[ ! -e $archive ]] || die '归档目录已存在。'
+    mv -- "$BASE" "$archive"
+    echo "已保留上次失败记录：$archive"
+  fi
   # Only the exact Beszel hub image is eligible, never beszel-agent or an
   # arbitrary service whose container name happens to contain beszel.
   local ids inventory selected
@@ -72,6 +95,45 @@ PY
   fi
   if [[ -n $selected ]]; then
     read -r old_id old_running old_restart <<< "$selected"
+  else
+    # A native Beszel hub has no Docker port mapping. Resolve the listener's
+    # executable, dedicated systemd unit, MainPID and enable state before
+    # granting this installer permission to stop anything on the host.
+    command -v ss >/dev/null || die '缺少 ss，请安装 iproute2。'
+    local listeners native
+    listeners="$(ss -H -lntp '( sport = :7070 )')"
+    native="$(python3 - "$listeners" <<'PY'
+from pathlib import Path
+import re, subprocess, sys
+raw = sys.argv[1].strip()
+if not raw:
+    sys.exit(0)
+pids = set(re.findall(r'pid=(\d+)', raw))
+if len(pids) != 1:
+    sys.exit('7070 监听进程不唯一或无法识别，未停止服务。')
+pid = next(iter(pids))
+exe = Path('/proc', pid, 'exe').resolve(strict=True)
+if exe.name != 'beszel':
+    sys.exit('7070 不是 Beszel 主程序，未停止服务。')
+cgroup = Path('/proc', pid, 'cgroup').read_text()
+units = set(re.findall(r':/system\.slice/([^/\n]+\.service)(?:\n|$)', cgroup))
+if len(units) != 1:
+    sys.exit('Beszel 不属于可确认的独立 systemd 服务，未停止；请反馈 systemctl status ' + pid)
+unit = next(iter(units))
+def prop(key):
+    return subprocess.check_output(['systemctl', 'show', unit, '-p', key, '--value'], text=True).strip()
+if prop('MainPID') != pid or prop('TriggeredBy'):
+    sys.exit('服务不是 Beszel 独立主进程，或存在自动激活源，未停止。')
+enabled = prop('UnitFileState')
+if enabled not in {'enabled', 'disabled'}:
+    sys.exit('服务启用方式需人工确认：' + unit + ' ' + enabled)
+print(unit, enabled)
+PY
+    )"
+    if [[ -n $native ]]; then
+      read -r old_unit old_enabled <<< "$native"
+      echo "识别到宿主机 Beszel 服务：$old_unit"
+    fi
   fi
   echo '[1/5] 拉取固定版本镜像；此阶段不停止 Beszel...'
   docker pull "$IMAGE"
@@ -87,15 +149,27 @@ PY
   if [[ -n $old_id ]]; then
     docker inspect "$old_id" > "$backup/beszel-inspect.json"
   fi
+  if [[ -n $old_unit ]]; then
+    systemctl cat "$old_unit" > "$backup/beszel-unit.txt"
+    systemctl show "$old_unit" > "$backup/beszel-unit-properties.txt"
+    printf '%s %s\n' "$old_unit" "$old_enabled" > "$backup/beszel-unit-state.txt"
+  fi
   rollback() {
     local rc=$?
     trap - EXIT
     if (( rc != 0 && committed == 0 )); then
       echo '部署失败，尝试恢复原 Beszel 容器...' >&2
-      if (( new_created )); then docker rm -f komari >/dev/null 2>&1 || true; fi
+      if (( new_created )); then
+        docker logs komari > "$backup/komari-failed.log" 2>&1 || true
+        docker rm -f komari >/dev/null 2>&1 || true
+      fi
       if (( changed )) && [[ -n $old_id ]]; then
         docker update --restart="$old_restart" "$old_id" >/dev/null 2>&1 || true
         if [[ $old_running == true ]]; then docker start "$old_id" >/dev/null 2>&1 || true; fi
+      fi
+      if (( host_changed )) && [[ -n $old_unit ]]; then
+        if [[ $old_enabled == enabled ]]; then systemctl enable "$old_unit" >/dev/null 2>&1 || true; fi
+        systemctl start "$old_unit" >/dev/null 2>&1 || true
       fi
       echo "检查记录：$BASE；未删除 Beszel 数据。" >&2
     fi
@@ -108,10 +182,15 @@ PY
     docker update --restart=no "$old_id" >/dev/null
     docker stop -t 30 "$old_id" >/dev/null
   fi
+  if [[ -n $old_unit ]]; then
+    host_changed=1
+    systemctl stop "$old_unit"
+  fi
   # Probe host-side port occupancy before starting the replacement.
   python3 - <<'PY'
 import socket
 s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 try:
     s.bind(('127.0.0.1', 7070))
 except OSError:
@@ -150,6 +229,9 @@ PY
     exit 1
   fi
   echo '[5/5] 完成替换，移除旧 Beszel 容器（不删除卷和原数据）...'
+  if [[ -n $old_unit && $old_enabled == enabled ]]; then
+    systemctl disable "$old_unit"
+  fi
   if [[ -n $old_id ]]; then docker rm "$old_id" >/dev/null; fi
   committed=1
   printf '%s\n' "$IMAGE" "$image_id" > "$BASE/installed-image.txt"
@@ -163,6 +245,7 @@ Komari 已启动。宝塔反向代理设置：
 访问 $ENDPOINT 完成初始化，启用管理员双重验证。
 数据：$BASE/data
 原 Beszel 数据未删除；容器配置记录：$backup
+原宿主机 Beszel 服务（如有）已停止并关闭开机启动，程序及数据保留。
 旧 Beszel Agent 不会自动迁移或卸载；后续逐台替换。
 
 注意：面板部署不等于禁用节点控制。添加节点时必须使用本脚本 agent 模式。
