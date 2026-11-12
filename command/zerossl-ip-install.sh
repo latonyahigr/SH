@@ -74,7 +74,7 @@ server {
     root $WEBROOT;
     location ~ ^/\\.well-known/pki-validation/[A-Za-z0-9_-]+\\.txt$ {
         default_type text/plain;
-        try_files \\$uri =404;
+        try_files \$uri =404;
     }
     location / { return 404; }
 }
@@ -115,7 +115,7 @@ info "提交 HTTP 验证..."
 curl -fsS --config <(api_url "/certificates/$CERT_ID/challenges") -X POST \
   --data-urlencode "validation_method=HTTP_CSR_HASH" \
   -o "$CERT_DIR/verify.json" || die "提交验证请求失败"
-if [[ "$(jq -r '.success // true' "$CERT_DIR/verify.json")" == "false" ]]; then
+if [[ "$(jq -r '.success == false' "$CERT_DIR/verify.json")" == "true" ]]; then
   jq '.error' "$CERT_DIR/verify.json"; die "ZeroSSL 拒绝验证"
 fi
 
@@ -155,7 +155,7 @@ server {
     root $WEBROOT;
     location ~ ^/\\.well-known/pki-validation/[A-Za-z0-9_-]+\\.txt$ {
         default_type text/plain;
-        try_files \\$uri =404;
+        try_files \$uri =404;
     }
     location / { return 404; }
 }
@@ -165,7 +165,7 @@ server {
     root $WEBROOT;
     ssl_certificate $CERT_DIR/fullchain.pem;
     ssl_certificate_key $CERT_DIR/private.key;
-    location / { try_files \\$uri \\$uri/ =404; }
+    location / { try_files \$uri \$uri/ =404; }
 }
 EOF
 if ! "$NGINX_BIN" -t; then
