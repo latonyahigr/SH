@@ -1,5 +1,5 @@
 一键部署hy2协议-自用版
-
+bash <(curl -fsSL "https://raw.githubusercontent.com/latonyahigr/SH/main/command/hy2-private-443.sh?ts=$(date +%s)")
 
 debian12 dd Windows10
 bash <(wget --no-check-certificate -qO- https://raw.githubusercontent.com/latonyahigr/SH/main/command/debian12-win10.sh) 2>&1 | ts '[%Y-%m-%d %H:%M:%S]' > debian12-win10_$(date +%Y%m%d_%H%M%S).log
