@@ -31,8 +31,8 @@ fi
 
 read -r -p "认证密码（回车自动生成）: " AUTH_PASS
 read -r -p "Salamander 混淆密码（回车自动生成）: " OBFS_PASS
-AUTH_PASS="${AUTH_PASS:-$(openssl rand -hex 24 2>/dev/null || true)}"
-OBFS_PASS="${OBFS_PASS:-$(openssl rand -hex 24 2>/dev/null || true)}"
+AUTH_PASS="${AUTH_PASS:-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n')}"
+OBFS_PASS="${OBFS_PASS:-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n')}"
 [[ "${#AUTH_PASS}" -ge 16 && "${#OBFS_PASS}" -ge 16 && "$AUTH_PASS" != "$OBFS_PASS" ]] || die "两组密码必须不同且各至少16字符"
 [[ "$AUTH_PASS" =~ ^[A-Za-z0-9._~-]+$ && "$OBFS_PASS" =~ ^[A-Za-z0-9._~-]+$ ]] || die "密码只允许字母、数字及 . _ ~ -（避免 YAML 转义问题）"
 
@@ -123,7 +123,14 @@ obfs:
     password: "$OBFS_PASS"
 EOF
 fi
-chmod 600 /etc/hysteria/config.yaml
+# Official systemd unit may run as user hysteria; restrict group access.
+if id hysteria >/dev/null 2>&1; then
+  chown root:hysteria /etc/hysteria /etc/hysteria/config.yaml
+  chmod 750 /etc/hysteria
+  chmod 640 /etc/hysteria/config.yaml
+else
+  die "服务用户 hysteria 不存在；检查官方安装结果"
+fi
 
 # Persist locally for copying to the client; never upload secrets to GitHub.
 SECRETS_FILE="/root/hy2-client-${STAMP}.txt"
