@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# HY2 Debian 12/13 interactive installer - UDP 443 + Salamander
+# HY2 Debian 10/11/12/13 interactive installer - UDP 443 + Salamander
 set -Eeuo pipefail
 umask 077
 
@@ -8,7 +8,16 @@ die() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "请使用 root 执行"
 [[ -r /etc/os-release ]] || die "无法识别系统"
 . /etc/os-release
-[[ "${ID:-}" == debian && "${VERSION_ID%%.*}" -ge 12 ]] || die "仅支持 Debian 12 及以上"
+[[ "${ID:-}" == debian && "${VERSION_ID:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "仅支持 Debian 系统"
+DEBIAN_MAJOR="${VERSION_ID%%.*}"
+(( DEBIAN_MAJOR >= 10 )) || die "仅支持 Debian 10 及以上"
+command -v systemctl >/dev/null 2>&1 || die "缺少 systemd，无法运行官方服务"
+if (( DEBIAN_MAJOR == 10 )); then
+  printf '\n[WARN] Debian 10 已结束安全支持，Hysteria 官方推荐 Debian 11 及以上。此系统仅作兼容尝试。\n'
+  printf '[WARN] 若 apt 仓库失效，请先自行修复系统软件源或升级操作系统，不会自动修改源。\n'
+  read -r -p "继续在 Debian 10 上安装？[y/N]: " OLD_CONFIRM
+  [[ "$OLD_CONFIRM" =~ ^[Yy]$ ]] || die "已取消"
+fi
 [[ -t 0 ]] || die "请在 SSH 交互终端执行（不能用 curl | bash）"
 
 read -r -p "HY2 域名（已解析到 VPS）: " DOMAIN
@@ -31,15 +40,15 @@ fi
 
 read -r -p "认证密码（回车自动生成）: " AUTH_PASS
 read -r -p "Salamander 混淆密码（回车自动生成）: " OBFS_PASS
-AUTH_PASS="${AUTH_PASS:-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n')}"
-OBFS_PASS="${OBFS_PASS:-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n')}"
+AUTH_PASS="${AUTH_PASS:-$(od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]')}"
+OBFS_PASS="${OBFS_PASS:-$(od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]')}"
 [[ "${#AUTH_PASS}" -ge 16 && "${#OBFS_PASS}" -ge 16 && "$AUTH_PASS" != "$OBFS_PASS" ]] || die "两组密码必须不同且各至少16字符"
 [[ "$AUTH_PASS" =~ ^[A-Za-z0-9._~-]+$ && "$OBFS_PASS" =~ ^[A-Za-z0-9._~-]+$ ]] || die "密码只允许字母、数字及 . _ ~ -（避免 YAML 转义问题）"
 
 log "安装依赖和检查端口"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq curl ca-certificates openssl iproute2 dnsutils >/dev/null
+apt-get update -qq || die "apt 更新失败，请检查 Debian 软件源；Debian 10 旧源可能已迁移到 archive.debian.org"
+apt-get install -y -qq curl ca-certificates openssl iproute2 dnsutils >/dev/null || die "依赖安装失败，请检查软件源"
 
 if ss -H -lunp | awk '{print $5}' | grep -Eq '(^|:)443$'; then
   # An existing HY2 service is allowed to restart; other UDP 443 listeners are not.
