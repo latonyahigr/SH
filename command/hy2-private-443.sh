@@ -187,4 +187,3 @@ printf '服务状态: '; systemctl is-active hysteria-server.service
 printf '\n请在云安全组放行 UDP 443'
 [[ "$CERT_MODE" == 1 ]] && printf ' 和 TCP 80（用于签发/续签证书）'
 printf '。本脚本不会修改云安全组。\n'
-printf '提示：服务运行不代表外网已连通；请使用客户端验证。\n'
